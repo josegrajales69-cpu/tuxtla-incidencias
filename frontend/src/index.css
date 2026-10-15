@@ -1,0 +1,145 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+.dark {
+  color-scheme: dark;
+}
+.light {
+  color-scheme: light;
+}
+
+/* Bloqueo total de scroll en ventana para evitar descalces de la interfaz */
+html, body, #root {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  overscroll-behavior: none !important;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Inter, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Glassmorphism Ultra Premium */
+.glass {
+  background: rgba(15, 23, 42, 0.88);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+.glass-light {
+  background: rgba(255, 255, 255, 0.88);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(226, 232, 240, 0.8);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+.glass-dark {
+  background: rgba(15, 23, 42, 0.92);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(51, 65, 85, 0.7);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+/* ---- Leaflet Styling Fijo ---- */
+.leaflet-container {
+  font: inherit;
+  outline: none;
+  background-color: #0b0f17 !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Capa Dark GIS de Alto Contraste con 100% de nombres de calles */
+.leaflet-tile.dark-gis-tiles {
+  filter: brightness(0.68) invert(1) contrast(3.2) hue-rotate(200deg) saturate(0.24) !important;
+}
+
+/* Restricción de tamaño exacto de pines Leaflet para que nunca se deformen */
+.custom-leaflet-marker {
+  width: 34px !important;
+  height: 44px !important;
+  background: transparent !important;
+  border: none !important;
+}
+.custom-leaflet-marker svg {
+  max-width: none !important;
+}
+
+.apple-map-pin-container,
+.apple-pick-pin-container,
+.apple-user-loc-container,
+.leaflet-div-icon {
+  background: transparent !important;
+  border: none !important;
+}
+
+/* Pin de selección de nuevo reporte */
+.pick-marker-wrapper {
+  position: absolute;
+  cursor: grab;
+  pointer-events: auto;
+  user-select: none;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.pick-3d {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  background: #2563eb;
+  border: 3px solid #ffffff;
+  box-shadow: 0 8px 24px rgba(37, 99, 235, 0.6);
+  display: grid;
+  place-items: center;
+  cursor: grab;
+}
+.pick-3d:active { cursor: grabbing; }
+.pick-3d-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ffffff;
+}
+
+/* Custom Popups Leaflet */
+.leaflet-popup-content-wrapper {
+  background: rgba(15, 23, 42, 0.95) !important;
+  color: #f8fafc !important;
+  border-radius: 1.25rem !important;
+  border: 1px solid rgba(51, 65, 85, 0.8) !important;
+  backdrop-filter: blur(16px) !important;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.6) !important;
+  padding: 6px !important;
+}
+.leaflet-popup-tip {
+  background: rgba(15, 23, 42, 0.95) !important;
+  border: 1px solid rgba(51, 65, 85, 0.8) !important;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.3);
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.5);
+  border-radius: 9999px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.8);
+}
