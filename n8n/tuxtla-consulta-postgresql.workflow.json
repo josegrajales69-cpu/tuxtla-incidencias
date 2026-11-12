@@ -1,0 +1,263 @@
+{
+  "id": "tuxtlaConsultaPostgresV1",
+  "name": "Act. 3.1 N8N CON Postgresql",
+  "active": false,
+  "nodes": [
+    {
+      "id": "dd0d5407-a7c9-490a-95b7-2e64f0b95417",
+      "name": "Recibir consulta",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "tuxtla-consultar-v1",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "tuxtlaDispatchHeaderV1",
+          "name": "Tuxtla - autenticación del webhook"
+        }
+      },
+      "webhookId": "3b365160-d90b-46af-a4fa-bb033ac6a4aa"
+    },
+    {
+      "id": "aa6e2a8a-47ef-4ea7-8300-7e8ad099a77d",
+      "name": "Validar consulta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "jsCode": "return $input.all().map(item=>{\n const b=item.json.body??item.json;\n if(b.schemaVersion!==1||!/^\\d{1,20}$/.test(String(b.telegramUserId))||String(b.chatId)!==String(b.telegramUserId)||typeof b.text!=='string'||b.text.length>128) throw new Error('Solicitud no válida');\n const match=b.text.trim().match(/^\\/consultar(?:@[A-Za-z0-9_]+)?\\s+(TX-\\d{6,18})$/i);\n return {json:{telegramUserId:String(b.telegramUserId),chatId:String(b.chatId),folio:match?match[1].toUpperCase():'',valid:!!match,previewOnly:b.previewOnly===true}};\n});"
+      }
+    },
+    {
+      "id": "5f6bd7ee-c121-493c-b377-75f195ea820f",
+      "name": "Consultar PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH permiso AS (\n SELECT EXISTS(SELECT 1 FROM n8n_consulta.operadores WHERE telegram_id=$1::text) AS autorizado\n)\nSELECT permiso.autorizado,\n CASE WHEN permiso.autorizado THEN\n  (SELECT row_to_json(r) FROM n8n_consulta.reportes r WHERE r.folio=$2::text LIMIT 1)\n ELSE NULL END AS reporte\nFROM permiso;",
+        "options": {
+          "queryReplacement": "={{ [$json.telegramUserId, $json.folio] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "tuxtlaConsultaPostgresV1",
+          "name": "Tuxtla - consulta de solo lectura"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "207e95e9-ae12-49df-ab81-fadaa2b23695",
+      "name": "Preparar respuesta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const input=$('Validar consulta').first().json;\nconst row=$json;\nconst clean=v=>String(v??'').replace(/[\\u0000-\\u001f\\u007f\\u202a-\\u202e\\u2066-\\u2069]/g,' ').slice(0,260);\nconst states={RECIBIDO:'Recibido',EN_REVISION:'En revisión',EN_ATENCION:'En atención',RESUELTO:'Resuelto'};\nlet text;\nif(row.error) text='No se pudo consultar la base de datos. Intenta de nuevo en unos momentos.';\nelse if(!row.autorizado) text='Tu Telegram no está autorizado. Vincula tu cuenta de brigadista desde la web y comprueba que esté activa.';\nelse if(!input.valid) text='Escribe /consultar seguido del folio. Ejemplo: /consultar TX-000004';\nelse if(!row.reporte) text='❌ No existe un reporte disponible con el folio '+input.folio+'. Comprueba que esté bien escrito; los reportes retirados no se muestran.';\nelse {const r=row.reporte;text='✅ Registro encontrado\\nFolio: '+clean(r.folio)+'\\nReporte: '+clean(r.titulo)+'\\nEstado: '+(states[r.estado]??clean(r.estado))+'\\nUbicación: '+(clean(r.direccion)||'Por confirmar')+'\\nResponsable: '+(clean(r.responsable)||'Sin asignar');}\nreturn [{json:{chatId:input.chatId,text,previewOnly:input.previewOnly,ok:!row.error,authorized:row.autorizado===true,exists:!!row.reporte&&row.autorizado===true}}];"
+      }
+    },
+    {
+      "id": "a63b6c63-f960-4dca-a0b6-7977e67ff5e0",
+      "name": "¿Vista previa?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "1cee7518-10f2-44ca-8d94-d2f573fb5421",
+              "leftValue": "={{ $json.previewOnly }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "f57de9c9-aae7-45cb-9ee3-f2bf2d41d936",
+      "name": "Responder en Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1200,
+        180
+      ],
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "f8hT33hIWC4klfPy",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "id": "c67628e9-1e1f-41db-8a99-55994724ad72",
+      "name": "Confirmar respuesta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        180
+      ],
+      "parameters": {
+        "jsCode": "const r=$json.result??$json;if(!r.message_id)throw new Error('Telegram no confirmó');return [{json:{ok:true,mode:'delivered',messageId:r.message_id}}];"
+      }
+    },
+    {
+      "id": "fd39e1ea-ea64-43c2-8fba-58493bce63f6",
+      "name": "Responder al receptor",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1680,
+        0
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Recibir consulta": {
+      "main": [
+        [
+          {
+            "node": "Validar consulta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validar consulta": {
+      "main": [
+        [
+          {
+            "node": "Consultar PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "Preparar respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar respuesta": {
+      "main": [
+        [
+          {
+            "node": "¿Vista previa?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Vista previa?": {
+      "main": [
+        [
+          {
+            "node": "Responder al receptor",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder en Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Responder en Telegram": {
+      "main": [
+        [
+          {
+            "node": "Confirmar respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirmar respuesta": {
+      "main": [
+        [
+          {
+            "node": "Responder al receptor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "executionTimeout": 30,
+    "saveDataErrorExecution": "none",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false
+  },
+  "pinData": {},
+  "versionId": "84a1ded8-8025-4f47-8bdc-2052bb54bee8",
+  "tags": []
+}

@@ -1,0 +1,1 @@
+require('dotenv').config();const {pool}=require('../dist/infrastructure/config/db');const fs=require('node:fs');pool.query(fs.readFileSync('../database/migrations/002_report_situations.sql','utf8')).then(()=>console.log('Situaciones y prioridad instaladas sin reenviar reportes antiguos.')).catch(e=>{console.error(e.message);process.exitCode=1;}).finally(()=>pool.end());

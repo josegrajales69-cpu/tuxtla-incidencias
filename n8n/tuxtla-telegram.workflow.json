@@ -1,0 +1,461 @@
+{
+  "id": "tuxtlaDispatchTelegramV1",
+  "name": "Tuxtla · Despacho de reportes a Telegram",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "tuxtla-dispatch-v1",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "1fea1c01-8158-4141-81cd-c55b22b892dc",
+      "name": "Recibir reporte",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "901abfdf-81ce-4473-b674-46dc78a954c2",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "tuxtlaDispatchHeaderV1",
+          "name": "Tuxtla - autenticación del webhook"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "0b88e66d-b0ad-4658-b717-e31abe54bea7",
+      "name": "Probar sin enviar",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{json:{\"previewOnly\":true,\"schemaVersion\":1,\"event\":\"REPORT_CREATED\",\"eventId\":\"a1111111-1111-4111-8111-111111111111\",\"timestamp\":\"2026-10-15T18:00:00Z\",\"data\":{\"id\":\"b2222222-2222-4222-8222-222222222222\",\"folio\":\"TX-000123\",\"category\":\"DRENAJE\",\"title\":\"EJEMPLO: alcantarilla sin tapa\",\"description\":\"Alcantarilla sin tapa en la banqueta. Ejemplo ficticio para vista previa.\",\"address\":\"Dirección de ejemplo, Centro, Tuxtla Gutiérrez\",\"coordinates\":{\"latitude\":16.753,\"longitude\":-93.1155}}}}];"
+      },
+      "id": "9facf819-9fcc-4b85-b911-4cf5c79497e2",
+      "name": "Datos de ejemplo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const formatAlert=function formatAlert(event) {\n  const categories = {\n    BACHE: ['🕳️', 'Bache'], LUMINARIA: ['💡', 'Alumbrado'],\n    BASURA: ['🗑️', 'Basura'], ARBOL_CAIDO: ['🌳', 'Árbol caído'],\n    FUGA_AGUA: ['💧', 'Fuga de agua'], DRENAJE: ['🚧', 'Drenaje'],\n    SEMAFORO: ['🚦', 'Semáforo'],\n  };\n  const clean = (value, max) => typeof value === 'string'\n    ? Array.from(value.replace(/[\\u0000-\\u001f\\u007f\\u202a-\\u202e\\u2066-\\u2069]/g, ' ').replace(/\\s+/g, ' ').trim()).slice(0, max).join('') : '';\n  const escape = value => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;\n  const data = event?.data;\n  if (event?.schemaVersion !== 1 || event.event !== 'REPORT_CREATED' || !uuid.test(event.eventId || '') || !data || !uuid.test(data.id || '')) throw new Error('Evento de reporte no válido');\n  if (!Object.hasOwn(categories, data.category)) throw new Error('Categoría no admitida');\n  if (!/^TX-\\d{6,}$/.test(data.folio || '')) throw new Error('Falta el folio persistente');\n  const lat = data.coordinates?.latitude, lng = data.coordinates?.longitude;\n  if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < 16.5 || lat > 17 || lng < -93.3 || lng > -92.9) throw new Error('Coordenadas inválidas o fuera del área configurada');\n  const title = clean(data.title, 200);\n  if (!title) throw new Error('Falta el título del reporte');\n  const description = clean(data.description, 320) || title;\n  const address = clean(data.address, 260) || 'Dirección por confirmar';\n  const text = `${title}. ${description}`.normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase();\n\n  const risk = /incendio|electrocucion|cables? (?:electricos? )?(?:expuestos?|caidos?)|personas? atrapadas?|drenaje abierto|alcantarilla (?:abierta|sin tapa)|inundacion|fuga (?:de agua )?(?:severa|masiva)|(?:arbol|tronco).*(?:bloquea|obstruye).*(?:avenida|via principal|boulevard|bulevar|libramiento)|aguas negras.*(?:desbord|calle)/;\n  const uncertain = /\\b(?:no|nunca|posible|posiblemente|parece|quizas|desconozco)\\b|\\bsin (?:riesgo|peligro|fuga|incendio|inundacion)\\b/;\n  let priority, reason;\n  if (data.prioritySource === 'structured-v1') {\n    if (!['ALTA','MEDIA','BAJA','POR_CONFIRMAR'].includes(data.priority) || !clean(data.situationLabel,160) || !clean(data.priorityReason,240)) throw new Error('Prioridad estructurada incompleta');\n    priority = data.priority === 'POR_CONFIRMAR' ? 'POR CONFIRMAR' : data.priority;\n    reason = clean(data.priorityReason,240);\n  } else if (risk.test(text)) {\n    if (uncertain.test(text)) {\n      priority = 'POR CONFIRMAR'; reason = 'El texto menciona riesgo con negación o incertidumbre; requiere revisión.';\n    } else {\n      priority = 'ALTA'; reason = 'Se describe un posible riesgo para personas o para la circulación.';\n    }\n  } else if (['BACHE', 'LUMINARIA', 'SEMAFORO'].includes(data.category)) {\n    priority = 'MEDIA'; reason = 'Requiere atención; no se describe un riesgo inmediato.';\n  } else if (data.category === 'BASURA') {\n    priority = 'BAJA'; reason = 'Acumulación de residuos sin riesgo inmediato descrito.';\n  } else {\n    priority = 'POR CONFIRMAR'; reason = 'Faltan datos sobre gravedad u obstrucción de la vía.';\n  }\n  const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;\n  const emoji=categories[data.category][0];\n  const category=data.category==='FUGA_AGUA'&&data.situation==='SIN_SUMINISTRO'?'Falta de suministro de agua':categories[data.category][1];\n  const situationLabel=clean(data.situationLabel,160);\n  const reportUrl=typeof data.reportUrl==='string'&&/^https?:\\/\\/[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\\d{1,5})?\\/\\?report=[0-9a-f-]{36}$/i.test(data.reportUrl)?data.reportUrl:undefined;\n  const attendLink=reportUrl?'\\n\\n👷 <a href=\"'+escape(reportUrl).replace(/\"/g,'&quot;')+'\">Ver detalle en la web</a>\\nPara atenderlo, pulsa «Tomar reporte» debajo de este aviso.':'';\n  const html = `⚠️ <b>NUEVO REPORTE EN TUXTLA</b>\\n• <b>Folio:</b> ${data.folio}\\n• <b>Incidente:</b> ${emoji} ${category}${situationLabel?`\\n• <b>Situación:</b> ${escape(situationLabel)}`:''}\\n• <b>Ubicación:</b> ${escape(address)}\\n• <a href=\"${mapsUrl}\">Ver ubicación en el mapa</a>\\n\\n📝 <b>Descripción:</b>\\n${escape(description)}\\n\\n📋 <b>Prioridad sugerida:</b>\\n<b>${priority}</b> — ${escape(reason)}${attendLink}`;\n  return { eventId:event.eventId, reportId:data.id, folio:data.folio, category:data.category,\n    priority, priorityReason:reason, prioritySource:data.prioritySource==='structured-v1'?'structured-v1':'rules-v1', requiresReview:priority === 'POR CONFIRMAR',\n    mapsUrl, html, plainText:`⚠️ NUEVO REPORTE EN TUXTLA\\nFolio: ${data.folio}\\nIncidente: ${emoji} ${category}\\nUbicación: ${address}\\nMapa: ${mapsUrl}\\n\\nDescripción: ${description}\\n\\nPrioridad sugerida: ${priority} — ${reason}` };\n};\nreturn $input.all().map(item=>{\n const event=item.json.body??item.json;const alert=formatAlert(event);const photo=event.data?.photo;\n const photoExpected=!!(photo&&photo.mimeType==='image/jpeg'&&typeof photo.data==='string'&&photo.data.length<=2800000&&/^[A-Za-z0-9+/]+={0,2}$/.test(photo.data));\n if(event.connectionTest===true){alert.html='🧪 <b>PRUEBA DE CONEXIÓN — TUXTLA REPORTES</b>\\n\\nLa foto y las situaciones del reporte están conectadas a este grupo.\\n\\n<b>No es una incidencia real y no requiere atención.</b>';alert.plainText='PRUEBA DE CONEXIÓN. No es una incidencia real.';}\n return {json:{...alert,photoExpected,connectionTest:event.connectionTest===true,previewOnly:event.previewOnly===true},...(photoExpected?{binary:{photo:{data:photo.data,mimeType:'image/jpeg',fileName:'reporte.jpg'}}}:{})};\n});"
+      },
+      "id": "75c23383-1a33-4cbd-8496-eebc491ebd49",
+      "name": "Preparar alerta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        464,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst config = {dryRun:false,chatId:'-5417480251'};\nreturn $input.all().map(item=>({binary:item.binary,json:{...item.json,dispatch:{...config,dryRun:config.dryRun || item.json.previewOnly === true}}}));"
+      },
+      "id": "59c31580-da93-4330-8006-8aca2d593ef3",
+      "name": "Configurar Telegram",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        688,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "3610058a-4ebb-43a6-9d7b-be9db190e7a3",
+              "leftValue": "={{ $json.dispatch.dryRun }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "6eb84bb6-6050-46c1-862a-688feaf00fce",
+      "name": "¿Modo de prueba?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        912,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map(item=>({json:{ok:false,mode:'preview',eventId:item.json.eventId,preview:item.json.plainText,priority:item.json.priority,html:item.json.html}}));"
+      },
+      "id": "268d1e3e-9f19-4ff5-8b41-ad2bcbab3d78",
+      "name": "Vista previa sin envío",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        -176
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "for (const item of $input.all()) { if (!/^-?\\d+$/.test(item.json.dispatch.chatId)) throw new Error('Configura el chatId del grupo de Telegram antes de enviar'); } return $input.all();"
+      },
+      "id": "7cc68bc9-5c96-49f8-97d9-c167300b823d",
+      "name": "Validar destino",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.dispatch.chatId }}",
+        "text": "={{ $json.html }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": true,
+          "parse_mode": "HTML"
+        },
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "🙋 Tomar reporte",
+                    "additionalFields": {
+                      "callback_data": "={{ $json.connectionTest ? \"test:claim\" : \"claim:\" + $json.reportId }}"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "36cd4596-3c25-4565-924f-a5c21dc7a79d",
+      "name": "Enviar a la brigada",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2040,
+        100
+      ],
+      "retryOnFail": false,
+      "webhookId": "8b523499-fff8-4424-a27c-a0ac7c9dc252",
+      "credentials": {
+        "telegramApi": {
+          "id": "f8hT33hIWC4klfPy",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const result=$json.result??$json;if(!result.message_id)throw new Error('Telegram no devolvió identificador del mensaje');return [{json:{ok:true,mode:'delivered',eventId:$('Preparar alerta').first().json.eventId,messageId:result.message_id,photoDelivered:$('Preparar texto del aviso').first().json.photoDelivered,claimButtonAttached:!!result.reply_markup?.inline_keyboard?.some(row=>row.some(button=>typeof button.callback_data==='string'&&(button.callback_data.startsWith('claim:')||button.callback_data==='test:claim')))}}];"
+      },
+      "id": "f98d6ff0-97a4-4763-a7cd-9ead418b78c3",
+      "name": "Confirmar entrega",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2260,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "d570f6cb-62bc-4388-b73b-365484a1690d",
+      "name": "Responder al backend",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        2500,
+        0
+      ]
+    },
+    {
+      "id": "3d8dd76d-3ca1-4a1d-b39c-13f5bf126d51",
+      "name": "¿Hay foto?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ba45c4e5-6fff-4bd9-bb6a-0cfca79b5bea",
+              "leftValue": "={{ $json.photoExpected }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "position": [
+        1360,
+        130
+      ]
+    },
+    {
+      "id": "569c8a6c-7603-42de-a488-65fd28331eab",
+      "name": "Enviar foto",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "parameters": {
+        "resource": "message",
+        "operation": "sendPhoto",
+        "chatId": "={{ $json.dispatch.chatId }}",
+        "binaryData": true,
+        "binaryPropertyName": "photo",
+        "additionalFields": {
+          "caption": "={{ $json.connectionTest ? \"🧪 FOTO DE PRUEBA — no es una incidencia real\" : \"📷 Evidencia del reporte \" + $json.folio }}",
+          "appendAttribution": false
+        }
+      },
+      "position": [
+        1570,
+        220
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "f8hT33hIWC4klfPy",
+          "name": "Telegram account"
+        }
+      },
+      "retryOnFail": false,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "7636899d-1ff0-4958-b550-8a8432e2a420",
+      "name": "Preparar texto del aviso",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "const data=$('Validar destino').first().json;const result=$json.result??$json;const photoDelivered=!!(data.photoExpected&&result.message_id);return [{json:{...data,photoDelivered,html:data.html+(data.photoExpected&&!photoDelivered?'\\n\\n📷 La foto puede consultarse en la aplicación.':'')}}];"
+      },
+      "position": [
+        1800,
+        100
+      ]
+    }
+  ],
+  "connections": {
+    "Probar sin enviar": {
+      "main": [
+        [
+          {
+            "node": "Datos de ejemplo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Datos de ejemplo": {
+      "main": [
+        [
+          {
+            "node": "Preparar alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recibir reporte": {
+      "main": [
+        [
+          {
+            "node": "Preparar alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar alerta": {
+      "main": [
+        [
+          {
+            "node": "Configurar Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Configurar Telegram": {
+      "main": [
+        [
+          {
+            "node": "¿Modo de prueba?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Modo de prueba?": {
+      "main": [
+        [
+          {
+            "node": "Vista previa sin envío",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Validar destino",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vista previa sin envío": {
+      "main": [
+        [
+          {
+            "node": "Responder al backend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validar destino": {
+      "main": [
+        [
+          {
+            "node": "¿Hay foto?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar a la brigada": {
+      "main": [
+        [
+          {
+            "node": "Confirmar entrega",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirmar entrega": {
+      "main": [
+        [
+          {
+            "node": "Responder al backend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay foto?": {
+      "main": [
+        [
+          {
+            "node": "Enviar foto",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Preparar texto del aviso",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar foto": {
+      "main": [
+        [
+          {
+            "node": "Preparar texto del aviso",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar texto del aviso": {
+      "main": [
+        [
+          {
+            "node": "Enviar a la brigada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "executionTimeout": 40,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": true,
+    "binaryMode": "separate"
+  },
+  "pinData": {},
+  "versionId": "a898a065-6234-41f5-8847-a8bae129139c",
+  "tags": []
+}

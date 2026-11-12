@@ -1,0 +1,32 @@
+const root=require('node:path').resolve(__dirname,'../..');process.chdir(root+'/backend');require(root+'/backend/node_modules/dotenv').config();const {pool}=require(root+'/backend/dist/infrastructure/config/db');const {randomUUID}=require('node:crypto');const assert=require('node:assert/strict');const jwt=require(root+'/backend/node_modules/jsonwebtoken');
+const {PostgresReportRepository}=require(root+'/backend/dist/infrastructure/adapters/outbound/PostgresReportRepository');const {PostgresTelegramBrigadeRepository}=require(root+'/backend/dist/infrastructure/adapters/outbound/PostgresTelegramBrigadeRepository');const {ClaimReportFromTelegram}=require(root+'/backend/dist/application/use-cases/ClaimReportFromTelegram');const {TelegramBrigadeWorker}=require(root+'/backend/dist/infrastructure/adapters/inbound/TelegramBrigadeWorker');const {Report}=require(root+'/backend/dist/domain/entities/Report');
+const ids=[randomUUID(),randomUUID(),randomUUID()];const tg=String(7000000000000+Math.floor(Math.random()*1000000)),tg2=String(Number(tg)+2000000);let reportId;const calls=[];const api={call:async(method,body)=>{calls.push({method,body});return true;}};
+(async()=>{
+ for(let i=0;i<ids.length;i++)await pool.query('INSERT INTO users(id,name,email,password_hash,role) VALUES($1,$2,$3,$4,$5)',[ids[i],'TEST TELEGRAM '+i,ids[i]+'@example.invalid','not-a-login-hash',i===2?'CIUDADANO':'BRIGADISTA']);
+ const links=new PostgresTelegramBrigadeRepository(pool);const reports=new PostgresReportRepository(pool);const service=new ClaimReportFromTelegram(reports,links);const worker=new TelegramBrigadeWorker(pool,api,links,service,'-123');
+ const token=i=>jwt.sign({id:ids[i]},process.env.JWT_SECRET||'tuxtla_secret_key_super_segura',{expiresIn:'5m'});
+ const get=async(i)=>{const response=await fetch('http://localhost:3001/api/telegram/link',{headers:i===undefined?{}:{Authorization:`Bearer ${token(i)}`}});return {status:response.status,data:await response.json()};};
+ assert.equal((await get()).status,401);assert.equal((await get(2)).status,403);assert.equal((await get(0)).data.linked,false);
+ const code=await links.issueCode(ids[0]);assert.equal(code.length,32);assert.equal(await links.consumeCode('invalid',tg),null);
+
+ await worker.handleUpdate({update_id:1,message:{text:'/start link_'+code,chat:{id:-123,type:'group'},from:{id:Number(tg)}}},42);assert.equal((await links.getLink(ids[0])).linked,false);
+ await worker.handleUpdate({update_id:2,message:{text:'/start link_'+code,chat:{id:Number(tg),type:'private'},from:{id:Number(tg)}}},42);
+ assert.equal((await links.getLink(ids[0])).linked,true);assert.equal(await links.consumeCode(code,tg),null);assert.ok(calls.some(x=>x.method==='sendMessage'&&x.body.text.includes('Telegram vinculado')));
+ const conflict=await links.issueCode(ids[1]);assert.equal(await links.consumeCode(conflict,tg),null);assert.ok(await links.consumeCode(conflict,tg2));
+ const expired=await links.issueCode(ids[2]);await pool.query("UPDATE telegram_link_codes SET expires_at=now()-interval '1 minute' WHERE user_id=$1",[ids[2]]);assert.equal(await links.consumeCode(expired,String(Number(tg)+4)),null);
+ const client=await pool.connect();try{await client.query('BEGIN');const report=await new PostgresReportRepository(client).create(new Report({title:'TEST TELEGRAM - NO REAL INCIDENT',category:'BACHE',situation:'PROFUNDO',lat:16.5102,lng:-93.2902}));reportId=report.id;await client.query("UPDATE dispatch_outbox SET status='sent',telegram_message_id='42' WHERE report_id=$1",[reportId]);await client.query('COMMIT');}catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+ const callback=(id,actor=tg,chat=-123,botId=42,message=42)=>({update_id:10,callback_query:{id,data:'claim:'+reportId,from:{id:Number(actor)},message:{message_id:message,chat:{id:chat,type:'group'},from:{id:botId}}}});
+ await worker.handleUpdate(callback('wrong-group',tg,-124),42);assert.equal((await reports.findById(reportId)).assignedTo,null);
+ await worker.handleUpdate(callback('wrong-bot',tg,-123,43),42);assert.equal((await reports.findById(reportId)).assignedTo,null);
+ await worker.handleUpdate(callback('wrong-message',tg,-123,42,43),42);assert.equal((await reports.findById(reportId)).assignedTo,null);
+ await worker.handleUpdate(callback('unlinked',String(Number(tg)+100)),42);assert.equal((await reports.findById(reportId)).assignedTo,null);
+ const concurrent=await Promise.all([service.execute(reportId,tg,42),service.execute(reportId,tg2,42)]);assert.equal(concurrent.filter(x=>x.ok).length,1);
+ const winner=concurrent[0].ok?tg:tg2;const loser=winner===tg?tg2:tg;
+ await worker.handleUpdate(callback('winner',winner),42);const assigned=await reports.findById(reportId);assert.equal(assigned.assignedTo,winner===tg?ids[0]:ids[1]);assert.equal(assigned.status,'EN_ATENCION');
+ assert.ok(calls.some(x=>x.method==='editMessageReplyMarkup'&&x.body.reply_markup.inline_keyboard[0][0].text.includes('TEST TELEGRAM')));
+ await worker.handleUpdate(callback('loser',loser),42);assert.ok(calls.some(x=>x.method==='answerCallbackQuery'&&x.body.callback_query_id==='loser'&&x.body.text.includes('ya está a cargo')));
+ await pool.query("UPDATE reports SET status='RESUELTO',resolution_photo_url='/media/reports/00000000-0000-0000-0000-000000000000.jpg',resolved_by=assigned_to,resolved_at=now() WHERE id=$1",[reportId]);await worker.handleUpdate(callback('resolved',winner),42);assert.ok(calls.some(x=>x.method==='answerCallbackQuery'&&x.body.callback_query_id==='resolved'&&x.body.text.includes('resuelto')));
+ await links.unlink(ids[0]);assert.equal(await links.findBrigadist(tg),null);assert.equal((await get(0)).data.linked,false);
+ await pool.query("UPDATE users SET role='CIUDADANO' WHERE id=$1",[ids[1]]);assert.equal(await links.findBrigadist(tg2),null);
+ console.log('PASS: private one-time linking, expired/reused/conflicting codes rejected, authenticated link endpoints, trusted group/bot/message checks, concurrent claim has one winner, callback confirmation/button updated, resolved reports blocked, unlink and current DB role enforced. Telegram API mocked; no external messages.');
+})().catch(error=>{console.error(error);process.exitCode=1;}).finally(async()=>{if(reportId){await pool.query('DELETE FROM dispatch_outbox WHERE report_id=$1',[reportId]);await pool.query('DELETE FROM reports WHERE id=$1',[reportId]);}await pool.query('DELETE FROM users WHERE id=ANY($1::uuid[])',[ids]);await pool.end();});

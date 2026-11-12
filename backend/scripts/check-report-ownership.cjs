@@ -1,0 +1,36 @@
+const root=require('node:path').resolve(__dirname,'../..');process.chdir(root+'/backend');require(root+'/backend/node_modules/dotenv').config();
+const {pool}=require(root+'/backend/dist/infrastructure/config/db');const jwt=require(root+'/backend/node_modules/jsonwebtoken');const assert=require('node:assert/strict');const {randomUUID}=require('node:crypto');
+const ids=[randomUUID(),randomUUID(),randomUUID(),randomUUID()];let reportId;
+const roles=['CIUDADANO','CIUDADANO','BRIGADISTA','BRIGADISTA'];
+const token=i=>jwt.sign({id:ids[i]},process.env.JWT_SECRET||'tuxtla_secret_key_super_segura',{expiresIn:'5m'});
+const request=async(method,path,actor,body)=>{const response=await fetch('http://localhost:3001/api'+path,{method,headers:{'Content-Type':'application/json',...(actor===undefined?{}:{Authorization:`Bearer ${token(actor)}`})},...(body?{body:JSON.stringify(body)}:{})});return {status:response.status,data:await response.json()};};
+(async()=>{
+ const before=(await pool.query('SELECT count(*)::int n FROM dispatch_outbox')).rows[0].n;
+ for(let i=0;i<ids.length;i++)await pool.query('INSERT INTO users(id,name,email,password_hash,role) VALUES($1,$2,$3,$4,$5)',[ids[i],'TEST-'+roles[i]+'-'+i,ids[i]+'@example.invalid','not-a-login-hash',roles[i]]);
+ const client=await pool.connect();try{await client.query('BEGIN');
+ const {Report}=require(root+'/backend/dist/domain/entities/Report');const {PostgresReportRepository}=require(root+'/backend/dist/infrastructure/adapters/outbound/PostgresReportRepository');
+ const report=await new PostgresReportRepository(client).create(new Report({title:'TEST ONLY - DO NOT DISPATCH',description:'Temporary integration fixture',category:'FUGA_AGUA',situation:'ABUNDANTE',lat:16.5101,lng:-93.2901,citizenId:ids[0]}));reportId=report.id;
+ await client.query('DELETE FROM dispatch_outbox WHERE report_id=$1',[reportId]);await client.query('COMMIT');
+ }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+ const options=await request('GET','/reports/options');assert.equal(options.data.FUGA_AGUA.some(x=>'priority'in x||'reason'in x),false);
+ const publicReports=await request('GET','/reports');const publicReport=publicReports.data.find(x=>x.id===reportId);assert.ok(publicReport);assert.equal('priority'in publicReport,false);
+ const citizenReports=await request('GET','/reports',0);assert.equal('priority'in citizenReports.data.find(x=>x.id===reportId),false);
+ const staffReports=await request('GET','/reports',2);assert.equal(staffReports.data.find(x=>x.id===reportId).priority,'ALTA');
+ const nearby=await request('GET','/reports/nearby?category=FUGA_AGUA&situation=ABUNDANTE&lat=16.5101&lng=-93.2901');assert.ok(nearby.data.some(x=>x.id===reportId));assert.equal(nearby.data[0].distanceMeters,0);
+ const different=await request('GET','/reports/nearby?category=FUGA_AGUA&situation=SIN_SUMINISTRO&lat=16.5101&lng=-93.2901');assert.equal(different.data.some(x=>x.id===reportId),false);
+ assert.equal((await request('POST',`/reports/${reportId}/withdraw`)).status,401);
+ assert.equal((await request('POST',`/reports/${reportId}/withdraw`,1)).status,403);
+ assert.equal((await request('DELETE',`/reports/${reportId}`,0)).status,403);
+ assert.equal((await request('POST',`/reports/${reportId}/claim`,0)).status,403);
+ const duplicate=await request('POST','/reports',0,{title:'Separate submission',category:'FUGA_AGUA',situation:'ABUNDANTE',lat:16.5101,lng:-93.2901});assert.equal(duplicate.status,409);assert.ok(duplicate.data.nearby.length);
+ const firstSupport=await request('POST',`/reports/${reportId}/support`,1);const secondSupport=await request('POST',`/reports/${reportId}/support`,1);assert.equal(firstSupport.data.upvotesCount,1);assert.equal(secondSupport.data.upvotesCount,1);
+ const claims=await Promise.all([request('POST',`/reports/${reportId}/claim`,2),request('POST',`/reports/${reportId}/claim`,3)]);assert.deepEqual(claims.map(x=>x.status).sort(),[200,409]);const winner=claims[0].status===200?2:3;const loser=winner===2?3:2;
+ const assigned=claims.find(x=>x.status===200).data;assert.equal(assigned.assignedTo,ids[winner]);assert.ok(assigned.assignedBrigadeName);assert.equal(assigned.status,'EN_ATENCION');
+ assert.equal((await request('PATCH',`/reports/${reportId}/status`,loser,{status:'EN_REVISION'})).status,403);
+ assert.equal((await request('PATCH',`/reports/${reportId}/status`,winner,{status:'RESUELTO'})).status,400);
+ assert.equal((await request('POST',`/reports/${reportId}/withdraw`,0)).status,200);
+ assert.equal((await request('GET','/reports')).data.some(x=>x.id===reportId),false);
+ assert.equal((await request('POST',`/reports/${reportId}/claim`,loser)).status,409);
+ assert.equal((await pool.query('SELECT count(*)::int n FROM dispatch_outbox')).rows[0].n,before);
+ console.log('PASS: private priorities/catalog, nearby filtering, duplicate prevention, idempotent support, authenticated ownership, simultaneous claims, assignee display, status permissions, withdrawn report hidden. No Telegram messages or permanent fixtures.');
+})().catch(error=>{console.error(error);process.exitCode=1;}).finally(async()=>{if(reportId){await pool.query('DELETE FROM report_upvotes WHERE report_id=$1',[reportId]);await pool.query('DELETE FROM dispatch_outbox WHERE report_id=$1',[reportId]);await pool.query('DELETE FROM reports WHERE id=$1',[reportId]);}await pool.query('DELETE FROM users WHERE id=ANY($1::uuid[])',[ids]);await pool.end();});

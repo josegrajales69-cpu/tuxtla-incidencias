@@ -1,0 +1,32 @@
+const root=require('node:path').resolve(__dirname,'../..');process.chdir(root+'/backend');require(root+'/backend/node_modules/dotenv').config();const {pool}=require(root+'/backend/dist/infrastructure/config/db');const {randomUUID}=require('node:crypto');const assert=require('node:assert/strict');const jwt=require(root+'/backend/node_modules/jsonwebtoken');const sharp=require(root+'/backend/node_modules/sharp');
+const {Report}=require(root+'/backend/dist/domain/entities/Report');const {PostgresReportRepository}=require(root+'/backend/dist/infrastructure/adapters/outbound/PostgresReportRepository');const {LocalPhotoStorage,dispatchPhoto}=require(root+'/backend/dist/infrastructure/adapters/outbound/LocalPhotoStorage');const {ResolveReportUseCase}=require(root+'/backend/dist/application/use-cases/ResolveReportUseCase');
+const ids=[randomUUID(),randomUUID(),randomUUID(),randomUUID()];const photos=new LocalPhotoStorage();const savedPhotos=[];let reportId;
+const token=i=>jwt.sign({id:ids[i],ver:0},process.env.JWT_SECRET,{expiresIn:'5m'});
+const request=async(method,path,actor,body,multipart=false)=>{const response=await fetch('http://localhost:3001/api'+path,{method,headers:{...(!multipart?{'Content-Type':'application/json'}:{}),...(actor===undefined?{}:{Authorization:'Bearer '+token(actor)})},...(body?{body:multipart?body:JSON.stringify(body)}:{})});return {status:response.status,data:await response.json()};};
+(async()=>{
+ for(let i=0;i<ids.length;i++)await pool.query('INSERT INTO users(id,name,email,password_hash,role) VALUES($1,$2,$3,$4,$5)',[ids[i],'Resolution fixture '+i,ids[i]+'@example.invalid','unused',i===0?'CIUDADANO':i===3?'ADMIN':'BRIGADISTA']);
+ const before=await sharp({create:{width:300,height:200,channels:3,background:'#bbcadd'}}).jpeg().toBuffer();const after=await sharp({create:{width:300,height:200,channels:3,background:'#bbddcc'}}).jpeg().toBuffer();
+ const original=await photos.save(before);savedPhotos.push(original);
+ const client=await pool.connect();try{await client.query('BEGIN');const report=await new PostgresReportRepository(client).create(new Report({title:'RESOLUTION TEST ONLY',category:'BACHE',situation:'PROFUNDO',lat:16.511,lng:-93.291,photoUrl:original,citizenId:ids[0]}));reportId=report.id;await client.query("UPDATE reports SET assigned_to=$2,status='EN_ATENCION' WHERE id=$1",[reportId,ids[1]]);await client.query('DELETE FROM dispatch_outbox WHERE report_id=$1',[reportId]);await client.query('COMMIT');}catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+ const path='/reports/'+reportId+'/resolve';const form=(bytes=after,notes='Se completó el trabajo de prueba.')=>{const data=new FormData();data.set('photo',new Blob([bytes],{type:'image/jpeg'}),'solution.jpg');data.set('notes',notes);return data;};
+ assert.equal((await request('POST',path,undefined,new FormData(),true)).status,401);
+ assert.equal((await request('POST',path,0,form(),true)).status,403);
+ assert.equal((await request('POST',path,2,form(),true)).status,403);
+ assert.equal((await request('POST',path,1,new FormData(),true)).status,400);
+ assert.equal((await request('POST',path,1,form(Buffer.from('not a photo')),true)).status,400);
+ assert.equal((await request('POST',path,1,form(Buffer.alloc(8*1024*1024+1)),true)).status,400);
+ assert.equal((await request('POST',path,1,form(after,'a'.repeat(2001)),true)).status,400);
+ for(const actor of [1,3])assert.equal((await request('PATCH','/reports/'+reportId+'/status',actor,{status:'RESUELTO'})).status,400);
+ assert.equal((await new PostgresReportRepository(pool).findById(reportId)).status,'EN_ATENCION');
+ await assert.rejects(()=>pool.query("UPDATE reports SET status='RESUELTO' WHERE id=$1",[reportId]),error=>error.code==='23514');
+ const success=await request('POST',path,1,form(),true);assert.equal(success.status,200);const report=success.data;savedPhotos.push(report.resolutionPhotoUrl);assert.equal(report.status,'RESUELTO');assert.equal(report.photoUrl,original);assert.notEqual(report.resolutionPhotoUrl,original);assert.equal(report.resolvedBy,ids[1]);assert.equal(report.resolvedByName,'Resolution fixture 1');assert.ok(report.resolvedAt);assert.match(report.resolutionNotes,/completó/);
+ const publicReport=(await request('GET','/reports')).data.find(item=>item.id===reportId);assert.equal(publicReport.resolutionPhotoUrl,report.resolutionPhotoUrl);assert.equal('priority'in publicReport,false);
+ const image=await fetch('http://localhost:3001'+report.resolutionPhotoUrl);assert.equal(image.status,200);assert.match(image.headers.get('content-type'),/image\/jpeg/);
+ assert.equal((await request('POST',path,1,form(),true)).status,409);
+ assert.equal((await request('PATCH','/reports/'+reportId+'/status',1,{status:'EN_ATENCION'})).status,200);
+ assert.equal((await request('POST',path,1,new FormData(),true)).status,400);
+ let racedPhoto;const raceStorage={save:async bytes=>{racedPhoto=await photos.save(bytes);savedPhotos.push(racedPhoto);await pool.query('UPDATE reports SET assigned_to=$2 WHERE id=$1',[reportId,ids[2]]);return racedPhoto;},remove:url=>photos.remove(url)};
+ await assert.rejects(()=>new ResolveReportUseCase(new PostgresReportRepository(pool),raceStorage).execute(reportId,{id:ids[1],role:'BRIGADISTA'},after),error=>error.statusCode===409);assert.equal(await dispatchPhoto(racedPhoto),undefined);
+ const second=await request('POST',path,2,form(),true);assert.equal(second.status,200);savedPhotos.push(second.data.resolutionPhotoUrl);assert.equal(second.data.resolvedBy,ids[2]);assert.equal(await dispatchPhoto(report.resolutionPhotoUrl),undefined);assert.ok(await dispatchPhoto(original));
+ console.log('PASS: mandatory decoded image, type/size limits, owner permissions, no legacy status bypass, database evidence guard, original/solution separated, public evidence, repeated closure rejected, new photo required after reopening, reassignment race rolls back file, replacement cleanup. No real reports or alerts created.');
+})().catch(error=>{console.error('Resolution verification failed:',error.message);process.exitCode=1;}).finally(async()=>{for(const url of savedPhotos)await photos.remove(url);if(reportId){await pool.query('DELETE FROM dispatch_outbox WHERE report_id=$1',[reportId]);await pool.query('DELETE FROM reports WHERE id=$1',[reportId]);}await pool.query('DELETE FROM users WHERE id=ANY($1::uuid[])',[ids]);await pool.end();});
